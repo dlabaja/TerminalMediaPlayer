@@ -2,7 +2,7 @@ use std::fs::File;
 use std::*;
 use std::path::Path;
 use rgb::RGB8;
-use ansi_rgb::{Foreground, WithBackground, WithForeground};
+use ansi_rgb::{Foreground, WithForeground};
 use image::codecs::gif::GifDecoder;
 use image;
 
@@ -23,24 +23,22 @@ fn main() {
     let file = File::open(Path::new(PATH));
 
     //decode to frames
-    let mut frames = GifDecoder::new(file.unwrap()).unwrap().into_frames();
+    let frames = GifDecoder::new(file.unwrap()).unwrap().into_frames();
 
     //iterate frames
+    let mut i = 0;
     for frame in frames {
+        i += 1;
         let frame = frame.unwrap();
-        let mut pixels: Vec<WithForeground<&str>> = Vec::new();
-
+        let mut pixels: String = "".to_string();
         for line in frame.buffer().chunks(frame.buffer().width() as usize * 4) {
             for pixel in line.chunks(4) {
-                pixels.push("██".fg(RGB8::new(pixel[0], pixel[1], pixel[2])));
+                pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
             }
-            pixels.push("\n".fg(RGB8::new(0, 0, 0)));
+            pixels += "\n";
         }
-
-        for i in pixels {
-            print!("{}", i);
-        }
-        println!();
+        print!("{}[2J", 27 as char);
+        println!("{}\n{}",pixels, i);
         thread::sleep(time::Duration::from_millis(40));
     }
 }
@@ -51,7 +49,7 @@ fn get_path() -> String {
     input.trim().to_string()
 }
 
-fn open_file(path: &Path) -> std::result::Result<File, &'static str> {
+fn open_file(path: &Path) -> Result<File, &'static str> {
     if let Ok(i) = File::open(&path) {
         if path.is_file() && Path::new(&path).extension().unwrap_or_default() == "gif" {
             return Ok(i);
