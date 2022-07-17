@@ -4,10 +4,11 @@ use std::path::Path;
 use image::codecs::gif::GifDecoder;
 use image;
 use eventual::Timer;
-
+use std::time::Duration;
 use image::{AnimationDecoder, Frame};
 
 const PATH: &str = "/home/dlabaja/Downloads/bad_apple.gif";
+const FPS :usize = 20;
 
 fn main() {
     //get a file
@@ -26,7 +27,7 @@ fn main() {
 
     //timer
     let timer = Timer::new();
-    let ticks = timer.interval_ms(40).iter();
+    let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
 
     //iterate frames
     let mut i = 0;
@@ -37,7 +38,6 @@ fn main() {
         i += 1;
     }
     println!("Konec");
-
 }
 
 fn process_frame(frame: &Frame, index: usize) {
@@ -48,8 +48,8 @@ fn process_frame(frame: &Frame, index: usize) {
         }
         pixels += "\n";
     }
-    print!("{}[2J", 27 as char);
-    println!("{}\n{}", pixels, index);
+    //print!("{}[2J", 27 as char);
+    println!("{}frame:{}/time:{:?}", pixels, index, Duration::from_secs((index / FPS) as u64));
 }
 
 fn get_path() -> String {
