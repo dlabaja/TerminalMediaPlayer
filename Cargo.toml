@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 image = "0.24.2"
 eventual = "0.1.7"
+dirs = "4.0.0"
+rodio = "0.15.0"
