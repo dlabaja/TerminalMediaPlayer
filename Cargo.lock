@@ -10,6 +10,7 @@ dependencies = [
  "eventual",
  "image",
  "rodio",
+ "term_size",
 ]
 
 [[package]]
@@ -1159,6 +1160,16 @@ checksum = "05bc2b72659ac27a2d0e7c4166c8596578197c4c41f767deab12c81f523b85c7"
 dependencies = [
  "log 0.3.9",
  "time",
+]
+
+[[package]]
+name = "term_size"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e4129646ca0ed8f45d09b929036bafad5377103edd06e50bf574b353d2b08d9"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

@@ -1,30 +1,27 @@
-use std::fs::{DirBuilder, File};
+use std::fs::File;
 use std::*;
-use std::io::BufReader;
 use std::path::Path;
 use image::codecs::gif::GifDecoder;
-use image;
 use eventual::Timer;
 use image::{AnimationDecoder, Frame};
 use std::process::Command;
-use dirs;
 use rodio::{Decoder, OutputStream, Source};
 
-const PATH: &str = "/home/dlabaja/Downloads/kscm.webm";
 const FPS: usize = 20;
+const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 fn main() {
-    let shell_alias = if cfg!(windows) { "cmd" } else { "sh" };
-
     //check ffmpeg
-    Command::new("sh").arg("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
+    Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
 
     //get a file
     println!("Write a path");
-    let mut file = open_file(Path::new(&get_path()));
-    while file.is_err() {
-        println!("{}", file.unwrap_err());
-        file = open_file(Path::new(&get_path()));
+    let mut input = get_path();
+    let mut path = Path::new(&input);
+    while File::open(path).is_err() || !is_video(path) {
+        println!("Unsuported file / path is not correct - try again");
+        input = get_path();
+        path = Path::new(&input);
     }
 
     println!("Path is right - processing video (might take some time)");
@@ -32,12 +29,13 @@ fn main() {
     //convert video
     println!("Converting video");
     let video = &format!("{}{}output.gif", dirs::data_local_dir().unwrap().display(), get_system_backslash());
-    Command::new("ffmpeg").args(["-i", PATH, "-vf", "scale=96:54,fps=20", &format!("{}", Path::new(video).display()), "-y"]).output().expect("Unable to convert to gif");
+    Command::new("ffmpeg").args(["-i", &path.display().to_string(), "-vf", &format!("scale={}:{},fps=20", term_size::dimensions().unwrap().1.clamp(16, 96), term_size::dimensions().unwrap().0.clamp(9, 54)), &format!("{}", Path::new(video).display()), "-y"]).output().expect("Unable to convert to gif");
+    println!("{}x{}", term_size::dimensions().unwrap().1.clamp(16, 96), term_size::dimensions().unwrap().0.clamp(9, 54));
 
     //convert audio
     println!("Converting audio");
     let audio = &format!("{}{}output.mp3", dirs::data_local_dir().unwrap().display(), get_system_backslash());
-    Command::new("ffmpeg").args(["-i", PATH, &format!("{}", Path::new(audio).display()), "-y"]).output().expect("Unable to convert audio");
+    Command::new("ffmpeg").args(["-i", &path.display().to_string(), &format!("{}", Path::new(audio).display()), "-y"]).output().expect("Unable to convert audio");
 
     //decode to frames
     println!("Processing frames");
@@ -48,7 +46,6 @@ fn main() {
     let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
 
     //iterate frames
-    let mut i = 0;
     let max_frames = frames.len();
 
     //play audio
@@ -56,12 +53,21 @@ fn main() {
     let source = Decoder::new(File::open(audio).unwrap()).unwrap();
     stream_handle.play_raw(source.convert_samples()).expect("TODO: panic message");
 
-    for _ in ticks {
+    for (i, _) in ticks.enumerate() {
         if i == max_frames - 1 { break; }
         process_frame(frames.get(i).unwrap(), i);
-        i += 1;
     }
     println!("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer");
+}
+
+fn is_video(path: &Path) -> bool {
+    if path.is_dir() {
+        return false;
+    }
+    if VIDEO_FORMATS.contains(&path.extension().unwrap().to_str().unwrap()) {
+        return true;
+    }
+    false
 }
 
 fn get_system_backslash() -> &'static str {
@@ -96,13 +102,4 @@ fn secs_to_secs_and_mins(secs: usize) -> String {
         return format!("{}:0{}", mins, seconds);
     }
     format!("{}:{}", mins, seconds)
-}
-
-fn open_file(path: &Path) -> Result<File, &'static str> {
-    if let Ok(i) = File::open(&path) {
-        if path.is_file() && Path::new(&path).extension().unwrap_or_default() == "gif" {
-            return Ok(i);
-        }
-    }
-    Err("Invalid file or not a gif - Try again")
 }
