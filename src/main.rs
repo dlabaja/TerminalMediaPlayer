@@ -14,15 +14,11 @@ fn main() {
     //check ffmpeg
     Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
 
-    //get a file
-    println!("Write a path");
-    let mut input = get_path();
-    let mut path = Path::new(&input);
-    while File::open(path).is_err() || !is_video(path) {
-        println!("Unsuported file / path is not correct - try again");
-        input = get_path();
-        path = Path::new(&input);
-    }
+    //open file
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1)}
+    let path = Path::new(args[1].trim());
+    if File::open(path).is_err() || !is_video(path) {panic!("Invalid path or unsupported file!")}
 
     println!("Path is right - processing video (might take some time)");
 
@@ -30,7 +26,6 @@ fn main() {
     println!("Converting video");
     let video = &format!("{}{}output.gif", dirs::data_local_dir().unwrap().display(), get_system_backslash());
     Command::new("ffmpeg").args(["-i", &path.display().to_string(), "-vf", &format!("scale={}:{},fps=20", term_size::dimensions().unwrap().1.clamp(16, 96), term_size::dimensions().unwrap().0.clamp(9, 54)), &format!("{}", Path::new(video).display()), "-y"]).output().expect("Unable to convert to gif");
-    println!("{}x{}", term_size::dimensions().unwrap().1.clamp(16, 96), term_size::dimensions().unwrap().0.clamp(9, 54));
 
     //convert audio
     println!("Converting audio");
