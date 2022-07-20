@@ -1,7 +1,7 @@
 # TerminalMediaPlayer
 Play your favorite videos inside a terminal! Supports all video formats and sound. Up to 96x54 resolution and 20 FPS!
 
-**Works on Linux** (Windows can't show colors, you can use https://github.com/dlabaja/ConsoleMediaPlayer)
+**Works on Linux** (Windows can't show colors, you can use https://github.com/dlabaja/ConsoleMediaPlayer instead)
 
 **FFMPEG** is needed to run it (https://ffmpeg.org/)
 
