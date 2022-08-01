@@ -6,13 +6,19 @@ use image::codecs::gif::GifDecoder;
 use eventual::Timer;
 use image::{AnimationDecoder, Frame};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
+use crossterm::execute;
+use crossterm::terminal::ClearType;
 use rodio::{Decoder, OutputStream, Source};
+use lazy_static::lazy_static;
 
 const FPS: usize = 20;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
+lazy_static!(static ref CACHE: Mutex<bool> = Mutex::new(true););
 
 fn main() {
+    let mut cache = true;
     //TODO pauza tlačítko, max terminal
 
     //crossterm::terminal::SetSize();
@@ -22,16 +28,19 @@ fn main() {
 
     //open file
     let args: Vec<String> = env::args().collect();
-    if args.len() != 2 { panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1) }
+    if args.len() < 1 { panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1) }
+    if args.contains(&"--ignore-cache".to_string()) {
+        *CACHE.lock().unwrap() = false;
+    }
     let path = Path::new(args[1].trim());
     if File::open(path).is_err() || !is_video(path) { panic!("Invalid path or unsupported file!") }
 
     println!("Path is right - processing video (might take some time)");
 
-    //upsert cache folder
+    //upsert CACHE folder
     let cache_folder = &format!("{}{}TerminalMediaPlayer", dirs::video_dir().unwrap().display(), get_system_backslash());
     if File::open(cache_folder).is_err() {
-        DirBuilder::new().create(cache_folder).expect(&*format!("Unable to create cache folder in {}", dirs::video_dir().unwrap().display()));
+        DirBuilder::new().create(cache_folder).expect(&*format!("Unable to create CACHE folder in {}", dirs::video_dir().unwrap().display()));
     }
 
     //convert video
@@ -42,7 +51,7 @@ fn main() {
     let path = Path::new(new_path);*/
 
     let video = &format!("{}{}{}.gif", cache_folder, get_system_backslash(), path.file_stem().unwrap().to_str().unwrap());
-    ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", term_size::dimensions().unwrap().0.clamp(16, 192) / 2, term_size::dimensions().unwrap().1.clamp(9, 54), FPS)],
+    ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", term_size::dimensions().unwrap().0.clamp(32, 196) / 2, term_size::dimensions().unwrap().1.clamp(9, 54), FPS)],
                    path.to_str().unwrap(), video);
 
     //convert audio
@@ -58,13 +67,10 @@ fn main() {
     let timer = Timer::new();
     let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
 
-    //iterate frames
-    //let max_frames = frames.len();
-
     //play audio
     let (_stream, stream_handle) = OutputStream::try_default().unwrap();
 
-
+    //iterate frames
     for (i, _) in ticks.enumerate() {
         if i == 10 {
             let source = Decoder::new(File::open(&audio).unwrap()).unwrap();
@@ -78,7 +84,7 @@ fn main() {
 }
 
 fn ffmpeg_handler(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
-    if File::open(output_path).is_err() {
+    if File::open(output_path).is_err() || !*CACHE.lock().unwrap(){
         let mut args = vec!["-i", input_path];
         for arg in ffmpeg_args {
             args.push(arg);
@@ -89,7 +95,7 @@ fn ffmpeg_handler(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
             .output().unwrap_or_else(|_| panic!("Ffmpeg can't convert the video from {} to {}", input_path, output_path));
         return;
     }
-    println!("Video found in cache ({}), aborting conversion", output_path)
+    println!("Video found in CACHE ({}), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag", output_path)
 }
 
 fn is_video(path: &Path) -> bool {

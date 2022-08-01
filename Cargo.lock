@@ -10,6 +10,7 @@ dependencies = [
  "dirs",
  "eventual",
  "image",
+ "lazy_static",
  "rodio",
  "term_size",
 ]
