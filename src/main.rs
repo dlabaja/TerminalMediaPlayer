@@ -1,21 +1,17 @@
 use std::fs::{DirBuilder, File};
 use std::*;
-use std::io::{BufReader, stdout};
+use std::io::BufReader;
 use std::path::Path;
 use image::codecs::gif::GifDecoder;
-use eventual::{Async, Timer};
+use eventual::Timer;
 use image::{AnimationDecoder, Frame};
 use std::process::Command;
-use std::sync::{mpsc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
-use crossterm::execute;
-use crossterm::style::Print;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use humthreads::{Builder, Thread};
-use rodio::{Decoder, OutputStream, Sink, Source};
+use rodio::{Decoder, OutputStream, Sink};
 use lazy_static::lazy_static;
-use rodio::source::SineWave;
 
 const FPS: usize = 20;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
@@ -27,14 +23,14 @@ lazy_static!(
 
 fn main() {
     //panic setup
-    /*panic::set_hook(Box::new(|info| {
-        println!("There was an error - {}", info.to_string().split("'").collect::<Vec<&str>>()[1]);
-    }));*/
+    panic::set_hook(Box::new(|info| {
+        println!("{}", info.to_string().split("'").collect::<Vec<&str>>()[1]);
+    }));
 
     //check ffmpeg
     Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
 
-    //open file
+    //get valid path
     let path = get_file_path();
 
     println!("Processing video (this might take some time)");
@@ -48,7 +44,7 @@ fn main() {
     //convert video
     println!("Converting video");
     let video = &format!("{}{}{}.gif", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
-    ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", term_size::dimensions().unwrap().0.clamp(32, 196) / 2, term_size::dimensions().unwrap().1.clamp(9, 54), FPS)],
+    ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", crossterm::terminal::size().unwrap().0.clamp(32, 196) / 2, crossterm::terminal::size().unwrap().1.clamp(9, 54), FPS)],
                    &path, video);
 
     //convert audio
@@ -60,28 +56,38 @@ fn main() {
     println!("Processing frames");
     let mut frames = GifDecoder::new(File::open(video).unwrap()).unwrap().into_frames().collect_frames().unwrap();
 
-    check_input();
-
-    //iterate frames
-    let mut frame_count = 0;
-    println!("No {}", frames.len());
-    loop {
-        while !*IS_PLAYING.lock().unwrap() {};
+    //input thread
+    thread::spawn(|| {
         let timer = Timer::new();
         let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
         for _ in ticks.enumerate() {
-            if frames.len() == 0 {
-                println!("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer");
-                process::exit(0);
+            enable_raw_mode().unwrap();
+            if poll(Duration::from_secs(0)).unwrap() {
+                if let Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE, }) = read().unwrap() {
+                    on_pause()
+                }
             }
+            disable_raw_mode().unwrap();
+        }
+    });
 
+    //iterate frames
+    let mut frame_count = 0;
+    loop {
+        while !*IS_PLAYING.lock().unwrap() {}; //wait on unpause
+
+        let timer = Timer::new();
+        let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
+
+        for _ in ticks.enumerate() {
             if !*IS_PLAYING.lock().unwrap() { break; }
 
             if frame_count == 10 {
                 play_audio(File::open(&audio).unwrap());
             }
 
-            process_frame(frames.get(0).unwrap(), frame_count);
+            process_frame(frames.get(0).expect(
+                "End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer"), frame_count);
             frames.remove(0);
             frame_count += 1;
         }
@@ -95,33 +101,10 @@ fn play_audio(file: File) {
         let source = Decoder::new(BufReader::new(file)).unwrap();
         sink.append(source);
         loop {
-            if !*IS_PLAYING.lock().unwrap() {
+            while !*IS_PLAYING.lock().unwrap() {
                 sink.pause();
-                continue;
             }
             sink.play();
-        }
-        thread::sleep(Duration::from_secs(1000000));
-        //sink.sleep_until_end();
-    });
-}
-
-fn check_input() {
-    thread::spawn(|| {
-        let timer = Timer::new();
-        let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
-        for _ in ticks.enumerate() {
-            enable_raw_mode().unwrap();
-            if poll(Duration::from_secs(0)).unwrap() {
-                match read().unwrap() {
-                    Event::Key(KeyEvent {
-                                   code: KeyCode::Char('p'),
-                                   modifiers: KeyModifiers::NONE,
-                               }) => on_pause(),
-                    _ => (),
-                }
-            }
-            disable_raw_mode().unwrap();
         }
     });
 }
@@ -139,13 +122,13 @@ fn on_pause() {
 fn get_file_path() -> String {
     let args: Vec<String> = env::args().collect();
 
-    let path = &args.get(1).expect(&format!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1)).trim();
+    let path = &args.get(1).unwrap_or_else(|| panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1)).trim();
     if args.contains(&"--ignore-cache".to_string()) {
         *CACHE.lock().unwrap() = false;
     }
 
     if File::open(Path::new(path)).is_err() || !is_video(Path::new(path)) { panic!("Invalid path or unsupported file!") }
-    return path.to_string();
+    path.to_string()
 }
 
 fn ffmpeg_handler(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
