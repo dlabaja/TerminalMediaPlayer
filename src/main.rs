@@ -1,6 +1,6 @@
 use std::fs::{DirBuilder, File};
 use std::*;
-use std::io::stdout;
+use std::io::{BufReader, stdout};
 use std::path::Path;
 use image::codecs::gif::GifDecoder;
 use eventual::{Async, Timer};
@@ -8,29 +8,28 @@ use image::{AnimationDecoder, Frame};
 use std::process::Command;
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, read};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
 use crossterm::execute;
 use crossterm::style::Print;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use humthreads::{Builder, Thread};
-use rodio::{Decoder, OutputStream, Source};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use lazy_static::lazy_static;
+use rodio::source::SineWave;
 
 const FPS: usize = 20;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 lazy_static!(
     static ref CACHE: Mutex<bool> = Mutex::new(true);
-    static ref THREAD: Mutex<Thread<()>> = spawn_input_thread();
+    static ref IS_PLAYING: Mutex<bool> = Mutex::new(true);
 );
 
 fn main() {
     //panic setup
-    panic::set_hook(Box::new(|info| {
-        let info = info.to_string();
-        println!("There was an error - {}", info.split("'").collect::<Vec<&str>>()[1]);
-        end_program();
-    }));
+    /*panic::set_hook(Box::new(|info| {
+        println!("There was an error - {}", info.to_string().split("'").collect::<Vec<&str>>()[1]);
+    }));*/
 
     //check ffmpeg
     Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
@@ -61,57 +60,80 @@ fn main() {
     println!("Processing frames");
     let mut frames = GifDecoder::new(File::open(video).unwrap()).unwrap().into_frames().collect_frames().unwrap();
 
-    //timer
-    let timer = Timer::new();
-    let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
+    check_input();
 
     //iterate frames
-    for (i, _) in ticks.enumerate() {
-        if i == 10 {
-            play_audio(Decoder::new(File::open(&audio).unwrap()).unwrap());
+    let mut frame_count = 0;
+    println!("No {}", frames.len());
+    loop {
+        while !*IS_PLAYING.lock().unwrap() {};
+        let timer = Timer::new();
+        let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
+        for _ in ticks.enumerate() {
+            if frames.len() == 0 {
+                println!("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer");
+                process::exit(0);
+            }
+
+            if !*IS_PLAYING.lock().unwrap() { break; }
+
+            if frame_count == 10 {
+                play_audio(File::open(&audio).unwrap());
+            }
+
+            process_frame(frames.get(0).unwrap(), frame_count);
+            frames.remove(0);
+            frame_count += 1;
         }
-        if frames.get(0).is_none() { break; }
-        process_frame(frames.get(0).unwrap(), i);
-        frames.remove(0);
     }
-    println!("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer");
-    end_program();
 }
 
-fn play_audio(source: Decoder<File>) {
+fn play_audio(file: File) {
     thread::spawn(|| {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        stream_handle.play_raw(source.convert_samples()).expect("TODO: panic message");
-        thread::sleep(Duration::from_secs(u64::MAX));
+        let sink = Sink::try_new(&stream_handle).unwrap();
+        let source = Decoder::new(BufReader::new(file)).unwrap();
+        sink.append(source);
+        loop {
+            if !*IS_PLAYING.lock().unwrap() {
+                sink.pause();
+                continue;
+            }
+            sink.play();
+        }
+        thread::sleep(Duration::from_secs(1000000));
+        //sink.sleep_until_end();
     });
 }
 
-fn spawn_input_thread() -> Mutex<Thread<()>> {
-    let thread = Builder::new("input".to_string()).spawn(|thread| {
-        loop {
-            while !thread.should_shutdown() {
-                enable_raw_mode().expect("\n");
-                let input = read().unwrap();
-                match input {
+fn check_input() {
+    thread::spawn(|| {
+        let timer = Timer::new();
+        let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
+        for _ in ticks.enumerate() {
+            enable_raw_mode().unwrap();
+            if poll(Duration::from_secs(0)).unwrap() {
+                match read().unwrap() {
                     Event::Key(KeyEvent {
                                    code: KeyCode::Char('p'),
                                    modifiers: KeyModifiers::NONE,
                                }) => on_pause(),
-                    Event::Key(KeyEvent {
-                                   code: KeyCode::Char('c'),
-                                   modifiers: KeyModifiers::CONTROL,
-                               }) => end_program(),
                     _ => (),
                 }
-                disable_raw_mode().unwrap();
             }
+            disable_raw_mode().unwrap();
         }
-    }).expect("Cannot create new thread");
-    Mutex::new(thread)
+    });
 }
 
 fn on_pause() {
-    Print("pressed p");
+    disable_raw_mode().unwrap();
+    let is_playing = *IS_PLAYING.lock().unwrap();
+    if !is_playing {
+        *IS_PLAYING.lock().unwrap() = true;
+        return;
+    }
+    *IS_PLAYING.lock().unwrap() = false;
 }
 
 fn get_file_path() -> String {
@@ -168,7 +190,7 @@ fn process_frame(frame: &Frame, index: usize) {
         pixels += "\n";
     }
     print!("{}[2J", 27 as char);
-    println!("{}\x1b[38;2;255;255;255mFrame={}/Time={}s", pixels, index, secs_to_secs_and_mins(index / FPS));
+    println!("{}\x1b[38;2;255;255;255mFrame={}/Time={}s         Press 'P' to pause/play", pixels, index, secs_to_secs_and_mins(index / FPS));
 }
 
 fn secs_to_secs_and_mins(secs: usize) -> String {
@@ -178,10 +200,4 @@ fn secs_to_secs_and_mins(secs: usize) -> String {
         return format!("{}:0{}", mins, seconds);
     }
     format!("{}:{}", mins, seconds)
-}
-
-fn end_program() {
-    THREAD.lock().unwrap().request_shutdown();
-    disable_raw_mode().unwrap();
-    process::exit(0);
 }
