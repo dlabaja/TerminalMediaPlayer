@@ -24,7 +24,7 @@ lazy_static!(
 fn main() {
     //panic setup
     panic::set_hook(Box::new(|info| {
-        println!("{}", info.to_string().split("'").collect::<Vec<&str>>()[1]);
+        println!("{}", info.to_string().split('\'').collect::<Vec<&str>>()[1]);
     }));
 
     //check ffmpeg
@@ -72,7 +72,8 @@ fn main() {
     });
 
     //iterate frames
-    let mut frame_count = 0;
+    let mut current_frame = 0;
+    let max_frames = frames.len();
     loop {
         while !*IS_PLAYING.lock().unwrap() {}; //wait on unpause
 
@@ -82,16 +83,34 @@ fn main() {
         for _ in ticks.enumerate() {
             if !*IS_PLAYING.lock().unwrap() { break; }
 
-            if frame_count == 10 {
+            if current_frame == 10 {
                 play_audio(File::open(&audio).unwrap());
             }
 
-            process_frame(frames.get(0).expect(
-                "End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer"), frame_count);
+            println!("{}[2J{}", 27 as char, generate_frame(frames.get(0).expect(
+                "End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer")));
+            println!("{}", generate_ribbon(current_frame, max_frames));
             frames.remove(0);
-            frame_count += 1;
+            current_frame += 1;
         }
     }
+}
+
+fn generate_ribbon(index: usize, max_frames: usize) -> String {
+    format!("\x1b[38;2;255;255;255m{}s <{}> {}s\nFrame={}/{}    Press 'P' to pause/play", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS), index, max_frames)
+}
+
+fn generate_timeline(index: usize, max_frames: usize) -> String {
+    let part_count = 15;
+    let mut timeline = "".to_string();
+    for _ in 0..f64::floor((index as f64 / f64::floor((max_frames / part_count) as f64)) as f64) as i32 {
+        timeline += "=";
+    }
+    timeline += "|";
+    while timeline.chars().count() < part_count + 1 {
+        timeline += "-";
+    }
+    timeline
 }
 
 fn play_audio(file: File) {
@@ -164,16 +183,15 @@ fn get_system_backslash() -> &'static str {
     "/"
 }
 
-fn process_frame(frame: &Frame, index: usize) {
-    let mut pixels: String = "".to_string();
+fn generate_frame(frame: &Frame) -> String {
+    let mut pixels = "".to_string();
     for line in frame.buffer().chunks(frame.buffer().width() as usize * 4) {
         for pixel in line.chunks(4) {
             pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
         }
         pixels += "\n";
     }
-    print!("{}[2J", 27 as char);
-    println!("{}\x1b[38;2;255;255;255mFrame={}/Time={}s         Press 'P' to pause/play", pixels, index, secs_to_secs_and_mins(index / FPS));
+    pixels
 }
 
 fn secs_to_secs_and_mins(secs: usize) -> String {
