@@ -19,6 +19,7 @@ const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wm
 lazy_static!(
     static ref CACHE: Mutex<bool> = Mutex::new(true);
     static ref IS_PLAYING: Mutex<bool> = Mutex::new(true);
+    static ref VOLUME: Mutex<f32> = Mutex::new(1f32);
 );
 
 fn main() {
@@ -63,8 +64,14 @@ fn main() {
         for _ in ticks.enumerate() {
             enable_raw_mode().unwrap();
             if poll(Duration::from_secs(0)).unwrap() {
-                if let Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE, }) = read().unwrap() {
-                    on_pause()
+                match read().unwrap() {
+                    Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE, }) =>
+                        on_pause(),
+                    Event::Key(KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::NONE, }) =>
+                        on_volume_up(),
+                    Event::Key(KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::NONE, }) =>
+                        on_volume_down(),
+                    _ => ()
                 }
             }
             disable_raw_mode().unwrap();
@@ -96,8 +103,26 @@ fn main() {
     }
 }
 
+fn on_volume_up() {
+    let volume = *VOLUME.lock().unwrap();
+    if (volume * 10.0).round() / 10.0 < 6.0 {
+        *VOLUME.lock().unwrap() += 0.1;
+        *VOLUME.lock().unwrap() = ((volume + 0.1) * 10.0).round() / 10.0;
+    }
+}
+
+fn on_volume_down() {
+    let volume = *VOLUME.lock().unwrap();
+    if (volume * 10.0).round() / 10.0 > 0.0 {
+        *VOLUME.lock().unwrap() -= 0.1;
+        *VOLUME.lock().unwrap() = ((volume - 0.1) * 10.0).round() / 10.0;
+    }
+}
+
 fn generate_ribbon(index: usize, max_frames: usize) -> String {
-    format!("\x1b[38;2;255;255;255m{}s <{}> {}s\nFrame={}/{}    Press 'P' to pause/play", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS), index, max_frames)
+    format!("\x1b[38;2;255;255;255m{}s <{}> {}s\
+    \nFrame={}/{}  Volume={}%\
+    \nPress 'P' to pause/play  Press 'ArrowUp/Down' to change volume", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS), index, max_frames, *VOLUME.lock().unwrap() * 100f32)
 }
 
 fn generate_timeline(index: usize, max_frames: usize) -> String {
@@ -117,6 +142,7 @@ fn play_audio(file: File) {
     thread::spawn(|| {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Sink::try_new(&stream_handle).unwrap();
+        //let sink = Sink::try_new(&OutputStream::try_default().unwrap().1).unwrap();
         let source = Decoder::new(BufReader::new(file)).unwrap();
         sink.append(source);
         loop {
@@ -124,6 +150,7 @@ fn play_audio(file: File) {
                 sink.pause();
             }
             sink.play();
+            sink.set_volume(*VOLUME.lock().unwrap())
         }
     });
 }
