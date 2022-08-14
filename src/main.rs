@@ -1,11 +1,12 @@
 use std::fs::{DirBuilder, File};
 use std::*;
+use std::cmp::max;
 use std::io::BufReader;
 use std::path::Path;
 use image::codecs::gif::GifDecoder;
 use eventual::Timer;
 use image::{AnimationDecoder, Frame};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
@@ -24,17 +25,26 @@ lazy_static!(
 
 fn main() {
     //panic setup
-    panic::set_hook(Box::new(|info| {
+    /*panic::set_hook(Box::new(|info| {
         println!("{}", info.to_string().split('\'').collect::<Vec<&str>>()[1]);
-    }));
-
-    //check ffmpeg
-    Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
+    }));*/
 
     //get valid path
     let path = get_file_path();
 
-    println!("Processing video (this might take some time)");
+    //check ffmpeg
+    Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
+
+    //get video size
+    let aspect_ratio = String::from_utf8(Command::new("ffprobe").args([&path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=display_aspect_ratio", "-of", "csv=s=x:p=0"]).
+        output().unwrap().stdout).unwrap();
+    let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
+
+    println!("{:?}", get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32));
+    let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
+
+
+    println!("Processing video (this might take some time)\n------------------");
 
     //upsert CACHE folder
     let cache_folder = &format!("{}{}TerminalMediaPlayer", dirs::video_dir().unwrap().display(), get_system_backslash());
@@ -44,14 +54,15 @@ fn main() {
 
     //convert video
     println!("Converting video");
-    let video = &format!("{}{}{}.gif", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
-    ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", crossterm::terminal::size().unwrap().0.clamp(32, 196) / 2, crossterm::terminal::size().unwrap().1.clamp(9, 54), FPS)],
-                   &path, video);
+    let video = &format!("{}{}{}.mp4", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
+    video_convertor(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)],
+                    &path, video);
 
+    //return;
     //convert audio
     println!("Converting audio");
     let audio = format!("{}{}{}.mp3", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
-    ffmpeg_handler(vec![], &path, &audio);
+    video_convertor(vec![], &path, &audio);
 
     //decode to frames
     println!("Processing frames");
@@ -96,11 +107,48 @@ fn main() {
 
             println!("{}[2J{}", 27 as char, generate_frame(frames.get(0).expect(
                 "End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer")));
-            println!("{}", generate_ribbon(current_frame, max_frames));
+            println!("{}", generate_ribbon(current_frame + 1, max_frames));
             frames.remove(0);
             current_frame += 1;
         }
     }
+}
+
+fn get_ideal_resolution(width: f32, height: f32) -> (usize, usize) {
+    let mut amplifier: f32 = 0.0;
+    let (term_width, term_height) = crossterm::terminal::size().unwrap();
+    //let max_size = (crossterm::terminal::size().unwrap().0 * (crossterm::terminal::size().unwrap().1 / 3)).clamp(0, 4968) as f32;
+    //println!("{}", max_size);
+    for i in 0..1000
+    {
+        let i = (i as f32) / 10.0;
+        if (width * i > term_width as f32 || height * i > term_height as f32) || width * height * i * i > 4968.0 {
+            break;
+        }
+        amplifier = i;
+    }
+    ((width * amplifier).round() as usize, (height * amplifier).round() as usize)
+}
+
+fn video_convertor(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
+    if File::open(output_path).is_err() || !*CACHE.lock().unwrap() {
+        let mut ffmpeg_args = ffmpeg_args;
+        ffmpeg_args.push(output_path);
+        ffmpeg_handler(ffmpeg_args, input_path);
+        return;
+    }
+    println!("Video found in CACHE ({}), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag", output_path)
+}
+
+fn ffmpeg_handler(ffmpeg_args: Vec<&str>, input_path: &str) -> Output {
+    let mut args = vec!["-i", input_path];
+    for arg in ffmpeg_args {
+        args.push(arg);
+    }
+    args.push("-y");
+
+    Command::new("ffmpeg").args(args)
+        .output().unwrap_or_else(|_| panic!("FFMPEG failed, aborting"))
 }
 
 fn on_volume_up() {
@@ -121,7 +169,7 @@ fn on_volume_down() {
 
 fn generate_ribbon(index: usize, max_frames: usize) -> String {
     format!("\x1b[38;2;255;255;255m{}s <{}> {}s\
-    \nFrame={}/{}  Volume={}%\
+    \nFrame={}/{}  Volume={:.0}%\
     \nPress 'P' to pause/play  Press 'ArrowUp/Down' to change volume", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS), index, max_frames, *VOLUME.lock().unwrap() * 100f32)
 }
 
@@ -177,26 +225,10 @@ fn get_file_path() -> String {
     path.to_string()
 }
 
-fn ffmpeg_handler(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
-    if File::open(output_path).is_err() || !*CACHE.lock().unwrap() {
-        let mut args = vec!["-i", input_path];
-        for arg in ffmpeg_args {
-            args.push(arg);
-        }
-        args.append(&mut vec![output_path, "-y"]);
-
-        Command::new("ffmpeg").args(args)
-            .output().unwrap_or_else(|_| panic!("Ffmpeg can't convert the video from {} to {}", input_path, output_path));
-        return;
-    }
-    println!("Video found in CACHE ({}), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag", output_path)
-}
-
 fn is_video(path: &Path) -> bool {
     if path.is_dir() {
         return false;
     }
-    println!("{:?}", path);
     if VIDEO_FORMATS.contains(&path.extension().unwrap().to_str().unwrap()) {
         return true;
     }
