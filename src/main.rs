@@ -40,7 +40,6 @@ fn main() {
         output().unwrap().stdout).unwrap();
     let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
 
-    println!("{:?}", get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32));
     let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
 
 
@@ -54,7 +53,7 @@ fn main() {
 
     //convert video
     println!("Converting video");
-    let video = &format!("{}{}{}.mp4", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
+    let video = &format!("{}{}{}.gif", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
     video_convertor(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)],
                     &path, video);
 
