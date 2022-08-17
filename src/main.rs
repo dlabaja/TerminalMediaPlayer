@@ -1,11 +1,11 @@
 use std::fs::{DirBuilder, File};
 use std::*;
 use std::cmp::max;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use image::codecs::gif::GifDecoder;
-use eventual::Timer;
-use image::{AnimationDecoder, Frame};
+use eventual::{Timer};
+use image::{AnimationDecoder, DynamicImage, Frame, RgbImage};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -13,8 +13,11 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use rodio::{Decoder, OutputStream, Sink};
 use lazy_static::lazy_static;
+use png;
+use png::{BitDepth, ColorType};
+use image::io::Reader as ImageReader;
 
-const FPS: usize = 20;
+const FPS: usize = 16;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 lazy_static!(
@@ -41,31 +44,34 @@ fn main() {
     let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
 
     let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
+    println!("{}c{}", width, height);
 
 
     println!("Processing video (this might take some time)\n------------------");
 
-    //upsert CACHE folder
-    let cache_folder = &format!("{}{}TerminalMediaPlayer", dirs::video_dir().unwrap().display(), get_system_backslash());
+    //upsert TMP & CACHE folder
+    let tmp_folder = &format!("{}{}TerminalMediaPlayer", dirs::video_dir().unwrap().display(), get_system_backslash());
+    if File::open(tmp_folder).is_err() {
+        DirBuilder::new().create(tmp_folder).expect(&*format!("Unable to create CACHE folder in {}", dirs::video_dir().unwrap().display()));
+    }
+    let cache_folder = &format!("{}{}TerminalMediaPlayer{}{}", dirs::video_dir().unwrap().display(), get_system_backslash(), get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
     if File::open(cache_folder).is_err() {
-        DirBuilder::new().create(cache_folder).expect(&*format!("Unable to create CACHE folder in {}", dirs::video_dir().unwrap().display()));
+        DirBuilder::new().create(cache_folder).expect(&*format!("Unable to create CACHE folder in {}", tmp_folder));
     }
 
     //convert video
     println!("Converting video");
-    let video = &format!("{}{}{}.gif", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
-    video_convertor(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)],
-                    &path, video);
+    let video = &format!("{}{}", cache_folder, get_system_backslash());
+    video_convertor(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)], &path, &format!("{}%0d.png", video));
 
-    //return;
     //convert audio
     println!("Converting audio");
     let audio = format!("{}{}{}.mp3", cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
     video_convertor(vec![], &path, &audio);
 
     //decode to frames
-    println!("Processing frames");
-    let mut frames = GifDecoder::new(File::open(video).unwrap()).unwrap().into_frames().collect_frames().unwrap();
+    //println!("Processing frames");
+    //let mut frames = GifDecoder::new(File::open(video).unwrap()).unwrap().into_frames().collect_frames().unwrap();
 
     //input thread
     thread::spawn(|| {
@@ -75,11 +81,11 @@ fn main() {
             enable_raw_mode().unwrap();
             if poll(Duration::from_secs(0)).unwrap() {
                 match read().unwrap() {
-                    Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE, }) =>
+                    Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE }) =>
                         on_pause(),
-                    Event::Key(KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::NONE, }) =>
+                    Event::Key(KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::NONE }) =>
                         on_volume_up(),
-                    Event::Key(KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::NONE, }) =>
+                    Event::Key(KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::NONE }) =>
                         on_volume_down(),
                     _ => ()
                 }
@@ -87,6 +93,17 @@ fn main() {
             disable_raw_mode().unwrap();
         }
     });
+
+    //push to buffer
+    let mut iter = 1;
+    let mut frames: Vec<DynamicImage> = vec![];
+    for i in fs::read_dir(cache_folder).unwrap().collect::<Vec<_>>() {
+        if i.unwrap().path().extension().unwrap() == "png" {
+            let img = ImageReader::open(format!("{}{}.png", video, iter.to_string().trim()).as_str()).unwrap().decode().unwrap();
+            frames.push(img);
+            iter += 1;
+        }
+    }
 
     //iterate frames
     let mut current_frame = 0;
@@ -103,25 +120,35 @@ fn main() {
             if current_frame == 10 {
                 play_audio(File::open(&audio).unwrap());
             }
+            if current_frame >= max_frames { break; }
 
-            println!("{}[2J{}", 27 as char, generate_frame(frames.get(0).expect(
-                "End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer")));
+            println!("{}[2J{}", 27 as char, generate_frame(frames[current_frame].to_rgb8()));
             println!("{}", generate_ribbon(current_frame + 1, max_frames));
-            frames.remove(0);
+            //frames.remove(0);
             current_frame += 1;
         }
     }
 }
 
+fn generate_frame(frame: RgbImage) -> String {
+    let mut pixels = "".to_string();
+    for line in frame.chunks(frame.width() as usize * 3) {
+        for pixel in line.chunks(3) {
+            pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
+        }
+        pixels += "\n";
+    }
+    pixels
+}
+
 fn get_ideal_resolution(width: f32, height: f32) -> (usize, usize) {
     let mut amplifier: f32 = 0.0;
-    let (term_width, term_height) = crossterm::terminal::size().unwrap();
-    //let max_size = (crossterm::terminal::size().unwrap().0 * (crossterm::terminal::size().unwrap().1 / 3)).clamp(0, 4968) as f32;
-    //println!("{}", max_size);
+    let term_width = crossterm::terminal::size().unwrap().0;
+    let term_height = crossterm::terminal::size().unwrap().1;
     for i in 0..1000
     {
         let i = (i as f32) / 10.0;
-        if (width * i > term_width as f32 || height * i > term_height as f32) || width * height * i * i > 4968.0 {
+        if (width * i * 2.0> term_width as f32 || height * i > term_height as f32) || width * height * i * i > 4968.0 {
             break;
         }
         amplifier = i;
@@ -130,6 +157,7 @@ fn get_ideal_resolution(width: f32, height: f32) -> (usize, usize) {
 }
 
 fn video_convertor(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
+    //TODO fixnout ignore-cache
     if File::open(output_path).is_err() || !*CACHE.lock().unwrap() {
         let mut ffmpeg_args = ffmpeg_args;
         ffmpeg_args.push(output_path);
@@ -239,17 +267,6 @@ fn get_system_backslash() -> &'static str {
         return "\\";
     }
     "/"
-}
-
-fn generate_frame(frame: &Frame) -> String {
-    let mut pixels = "".to_string();
-    for line in frame.buffer().chunks(frame.buffer().width() as usize * 4) {
-        for pixel in line.chunks(4) {
-            pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
-        }
-        pixels += "\n";
-    }
-    pixels
 }
 
 fn secs_to_secs_and_mins(secs: usize) -> String {
