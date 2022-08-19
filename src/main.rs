@@ -1,4 +1,4 @@
-use std::fs::{DirBuilder, File};
+use std::fs::{DirBuilder, File, read_dir};
 use std::*;
 use std::cmp::max;
 use std::io::{BufReader, Cursor, Read};
@@ -63,7 +63,10 @@ fn main() {
     //convert video
     println!("Converting video");
     let video = format!("{}{}", &cache_folder, get_system_backslash());
-    video_converter(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)], &path, &format!("{}%0d.png", video));
+    println!("{}x{}", read_dir(&cache_folder).unwrap().count() - 3, max_frames);
+    if read_dir(&cache_folder).unwrap().count() - 1 < max_frames{
+        video_converter(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)], &path, &format!("{}%0d.png", video));
+    }
 
     //convert audio
     println!("Converting audio");
