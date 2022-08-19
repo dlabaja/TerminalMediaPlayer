@@ -28,7 +28,7 @@ lazy_static!(
 );
 
 fn main() {
-    //TODO fixnout ignore-cache, --no-ribbon, moc velký aspect ratio
+    //TODO fixnout ignore-cache, --no-ribbon, moc velký aspect ratio, získat poslední snímek a konvertovat od toho
     //panic setup
     /*panic::set_hook(Box::new(|info| {
         println!("{}", info.to_string().split('\'').collect::<Vec<&str>>()[1]);
@@ -63,9 +63,12 @@ fn main() {
     //convert video
     println!("Converting video");
     let video = format!("{}{}", &cache_folder, get_system_backslash());
-    println!("{}x{}", read_dir(&cache_folder).unwrap().count() - 3, max_frames);
-    if read_dir(&cache_folder).unwrap().count() - 1 < max_frames{
-        video_converter(vec!["-vf", &format!("scale={}:{},fps={}", width, height, FPS)], &path, &format!("{}%0d.png", video));
+    if read_dir(&cache_folder).unwrap().count() as i32 - 1 < max_frames as i32 {
+        let _path = path.clone();
+        let _video = video.clone();
+        thread::spawn(move || {
+            video_converter(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS)], &_path, &format!("{}%0d.png", &_video));
+        });
     }
 
     //convert audio
@@ -144,12 +147,10 @@ fn generate_frame(frame: RgbImage) -> String {
 fn get_max_frames(path: &Path) -> usize {
     let cur_max_frames = String::from_utf8(Command::new("ffprobe").args(format!("-v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 {}", path.to_str().unwrap()).split(' ')).
         output().unwrap().stdout).unwrap().trim().parse::<usize>().unwrap();
-    println!("{}", cur_max_frames);
     let cur_fps = String::from_utf8(Command::new("ffprobe").args(format!("-v error -select_streams v -of default=noprint_wrappers=1:nokey=1 -show_entries stream=r_frame_rate {}", path.to_str().unwrap()).split(' ')).
         output().unwrap().stdout).unwrap();
     let cur_fps = cur_fps.trim().split('/').collect::<Vec<&str>>();
     let fps_ratio = cur_fps[0].parse::<usize>().unwrap() / cur_fps[1].parse::<usize>().unwrap();
-    println!("{}", (cur_max_frames as f32 / (fps_ratio as f32 / FPS as f32)) as usize);
     (cur_max_frames as f32 / (fps_ratio as f32 / FPS as f32)) as usize
 }
 
