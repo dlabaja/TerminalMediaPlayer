@@ -11,7 +11,6 @@ dependencies = [
  "eventual",
  "image",
  "lazy_static",
- "png",
  "rodio",
 ]
 

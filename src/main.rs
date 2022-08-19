@@ -1,11 +1,9 @@
 use std::fs::{DirBuilder, File, read_dir};
 use std::*;
-use std::cmp::max;
-use std::io::{BufReader, Cursor, Read};
+use std::io::BufReader;
 use std::path::Path;
-use image::codecs::gif::GifDecoder;
 use eventual::{Timer};
-use image::{AnimationDecoder, DynamicImage, Frame, RgbImage};
+use image::{DynamicImage, RgbImage};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -13,22 +11,20 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use rodio::{Decoder, OutputStream, Sink};
 use lazy_static::lazy_static;
-use png;
-use png::{BitDepth, ColorType};
 use image::io::Reader as ImageReader;
 
 const FPS: usize = 16;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 lazy_static!(
-    static ref CACHE: Mutex<bool> = Mutex::new(true);
+    static ref USE_CACHE: Mutex<bool> = Mutex::new(true);
     static ref IS_PLAYING: Mutex<bool> = Mutex::new(true);
     static ref FRAMES: Mutex<Vec<DynamicImage>> = Mutex::new(vec!());
     static ref VOLUME: Mutex<f32> = Mutex::new(1f32);
 );
 
 fn main() {
-    //TODO fixnout ignore-cache, --no-ribbon, moc velký aspect ratio, získat poslední snímek a konvertovat od toho
+    //TODO fixnout ignore-cache, --no-ribbon, moc velký aspect ratio
     //panic setup
     /*panic::set_hook(Box::new(|info| {
         println!("{}", info.to_string().split('\'').collect::<Vec<&str>>()[1]);
@@ -37,16 +33,11 @@ fn main() {
     //get valid path
     let path = get_file_path();
 
-    //check ffmpeg
-    Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
-
+    //get max_frames
     let max_frames = get_max_frames(Path::new(&path));
 
-    //get video size
-    let aspect_ratio = String::from_utf8(Command::new("ffprobe").args([&path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=display_aspect_ratio", "-of", "csv=s=x:p=0"]).
-        output().unwrap().stdout).unwrap();
-    let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
-    let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
+    //check ffmpeg
+    Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
 
     println!("Processing video (this might take some time)\n------------------");
 
@@ -61,20 +52,13 @@ fn main() {
     }
 
     //convert video
-    println!("Converting video");
-    let video = format!("{}{}", &cache_folder, get_system_backslash());
-    if read_dir(&cache_folder).unwrap().count() as i32 - 1 < max_frames as i32 {
-        let _path = path.clone();
-        let _video = video.clone();
-        thread::spawn(move || {
-            video_converter(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS)], &_path, &format!("{}%0d.png", &_video));
-        });
-    }
+    println!("Converting audio");
+    convert_video(cache_folder.clone(), max_frames, path.clone());
 
     //convert audio
     println!("Converting audio");
     let audio = format!("{}{}{}.mp3", &cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
-    video_converter(vec![], &path, &audio);
+    convert_audio(&audio, &path);
 
     //input thread
     thread::spawn(|| {
@@ -100,9 +84,9 @@ fn main() {
     //push to buffer
     thread::spawn(move || {
         let mut iter = 1;
-        for i in fs::read_dir(&cache_folder).unwrap().collect::<Vec<_>>() {
+        for i in read_dir(&cache_folder).unwrap().collect::<Vec<_>>() {
             if i.unwrap().path().extension().unwrap() == "png" {
-                let img = ImageReader::open(format!("{}{}.png", &video, iter.to_string().trim()).as_str()).unwrap().decode().unwrap();
+                let img = ImageReader::open(format!("{}{}{}.png", &cache_folder, get_system_backslash(), iter.to_string().trim()).as_str()).unwrap().decode().unwrap();
                 FRAMES.lock().unwrap().push(img);
                 iter += 1;
                 thread::sleep(Duration::from_millis(20));
@@ -131,6 +115,30 @@ fn main() {
             current_frame += 1;
         }
     }
+}
+
+fn convert_video(cache_folder: String, max_frames: usize, path: String) {
+    if read_dir(&cache_folder).unwrap().count() as i32 - 1 < max_frames as i32 || !*USE_CACHE.lock().unwrap() {
+        thread::spawn(move || {
+            //get video size
+            let aspect_ratio = String::from_utf8(Command::new("ffprobe").args([&path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=display_aspect_ratio", "-of", "csv=s=x:p=0"]).
+                output().unwrap().stdout).unwrap();
+            let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
+            let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
+
+            ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS), &format!("{}{}%0d.png", &cache_folder, get_system_backslash())], &path);
+        });
+        return;
+    }
+    println!("Video found in CACHE (your-video-folder/video-name), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag")
+}
+
+fn convert_audio(audio: &String, path: &str) {
+    if File::open(&audio).is_err() || !*USE_CACHE.lock().unwrap() {
+        ffmpeg_handler(vec![audio], path);
+        return;
+    }
+    println!("Audio found in CACHE (your-video-folder/video-name), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag")
 }
 
 fn generate_frame(frame: RgbImage) -> String {
@@ -167,16 +175,6 @@ fn get_ideal_resolution(width: f32, height: f32) -> (usize, usize) {
         amplifier = i;
     }
     ((width * amplifier).round() as usize, (height * amplifier).round() as usize)
-}
-
-fn video_converter(ffmpeg_args: Vec<&str>, input_path: &str, output_path: &str) {
-    if File::open(output_path).is_err() || !*CACHE.lock().unwrap() {
-        let mut ffmpeg_args = ffmpeg_args;
-        ffmpeg_args.push(output_path);
-        ffmpeg_handler(ffmpeg_args, input_path);
-        return;
-    }
-    println!("Video found in CACHE ({}), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag", output_path)
 }
 
 fn ffmpeg_handler(ffmpeg_args: Vec<&str>, input_path: &str) -> Output {
@@ -229,7 +227,6 @@ fn play_audio(file: File) {
     thread::spawn(|| {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Sink::try_new(&stream_handle).unwrap();
-        //let sink = Sink::try_new(&OutputStream::try_default().unwrap().1).unwrap();
         let source = Decoder::new(BufReader::new(file)).unwrap();
         sink.append(source);
         loop {
@@ -257,7 +254,7 @@ fn get_file_path() -> String {
 
     let path = &args.get(1).unwrap_or_else(|| panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1)).trim();
     if args.contains(&"--ignore-cache".to_string()) {
-        *CACHE.lock().unwrap() = false;
+        *USE_CACHE.lock().unwrap() = false;
     }
 
     if File::open(Path::new(path)).is_err() || !is_video(Path::new(path)) { panic!("Invalid path or unsupported file!") }
