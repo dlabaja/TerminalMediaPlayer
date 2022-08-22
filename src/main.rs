@@ -1,6 +1,7 @@
 use std::fs::{DirBuilder, File, read_dir};
 use std::*;
-use std::io::BufReader;
+use std::error::Error;
+use std::io::{BufReader, Cursor, stdout, Stdout, Write};
 use std::path::Path;
 use eventual::{Timer};
 use image::{DynamicImage, RgbImage};
@@ -8,12 +9,15 @@ use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
+use crossterm::{cursor, ExecutableCommand, QueueableCommand, style, terminal};
+use crossterm::style::Colored::ForegroundColor;
+use crossterm::style::{Color, Print, SetForegroundColor};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use rodio::{Decoder, OutputStream, Sink};
 use lazy_static::lazy_static;
 use image::io::Reader as ImageReader;
 
-const FPS: usize = 16;
+const FPS: usize = 20;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 lazy_static!(
@@ -35,6 +39,7 @@ fn main() {
 
     //get max_frames
     let max_frames = get_max_frames(Path::new(&path));
+    println!("{}", max_frames);
 
     //check ffmpeg
     Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
@@ -52,20 +57,20 @@ fn main() {
     }
 
     //convert video
-    println!("Converting audio");
+    println!("Converting video");
     convert_video(cache_folder.clone(), max_frames, path.clone());
 
     //convert audio
     println!("Converting audio");
     let audio = format!("{}{}{}.mp3", &cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
     convert_audio(&audio, &path);
+    enable_raw_mode().unwrap();
 
     //input thread
     thread::spawn(|| {
         let timer = Timer::new();
         let ticks = timer.interval_ms((1000 / FPS) as u32).iter();
         for _ in ticks.enumerate() {
-            enable_raw_mode().unwrap();
             if poll(Duration::from_secs(0)).unwrap() {
                 match read().unwrap() {
                     Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE }) =>
@@ -74,23 +79,27 @@ fn main() {
                         on_volume_up(),
                     Event::Key(KeyEvent { code: KeyCode::Down, modifiers: KeyModifiers::NONE }) =>
                         on_volume_down(),
+                    Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers: KeyModifiers::CONTROL }) =>
+                        end_process(),
                     _ => ()
                 }
             }
-            disable_raw_mode().unwrap();
         }
     });
 
     //push to buffer
     thread::spawn(move || {
         let mut iter = 1;
-        for i in read_dir(&cache_folder).unwrap().collect::<Vec<_>>() {
-            if i.unwrap().path().extension().unwrap() == "png" {
-                let img = ImageReader::open(format!("{}{}{}.png", &cache_folder, get_system_backslash(), iter.to_string().trim()).as_str()).unwrap().decode().unwrap();
-                FRAMES.lock().unwrap().push(img);
-                iter += 1;
-                thread::sleep(Duration::from_millis(20));
+        loop {
+            for _ in 0..10 {
+                let cur_file = format!("{}{}{}.png", &cache_folder, get_system_backslash(), iter.to_string().trim());
+                if Path::new(&cur_file).extension().unwrap() == "png" {
+                    let img = ImageReader::open(&cur_file).unwrap().decode().unwrap();
+                    FRAMES.lock().unwrap().push(img);
+                    iter += 1;
+                }
             }
+            thread::sleep(Duration::from_millis(200));
         }
     });
 
@@ -109,12 +118,21 @@ fn main() {
                 play_audio(File::open(&audio).unwrap());
             }
 
-            println!("{}[2J{}", 27 as char, generate_frame(FRAMES.lock().unwrap().get(current_frame)
-                .expect("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer").to_rgb8()));
-            println!("{}", generate_ribbon(current_frame + 1, max_frames));
+            generate_frame(FRAMES.lock().unwrap().get(0)
+                .expect("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer").to_rgb8());
+            generate_ribbon(current_frame + 1, max_frames);
+            FRAMES.lock().unwrap().remove(0);
             current_frame += 1;
         }
     }
+}
+
+fn end_process() {
+    disable_raw_mode().expect("TODO: panic message");
+    stdout()
+        .queue(Print("\x1B[2J\x1B[1;1H")).unwrap()
+        .queue(SetForegroundColor(Color::White)).expect("TODO: panic message");
+    process::exit(0);
 }
 
 fn convert_video(cache_folder: String, max_frames: usize, path: String) {
@@ -125,9 +143,11 @@ fn convert_video(cache_folder: String, max_frames: usize, path: String) {
                 output().unwrap().stdout).unwrap();
             let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
             let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
+            //let (width, height) = (80, 90);
 
             ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS), &format!("{}{}%0d.png", &cache_folder, get_system_backslash())], &path);
         });
+        thread::sleep(Duration::from_millis(500));
         return;
     }
     println!("Video found in CACHE (your-video-folder/video-name), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag")
@@ -141,15 +161,27 @@ fn convert_audio(audio: &String, path: &str) {
     println!("Audio found in CACHE (your-video-folder/video-name), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag")
 }
 
-fn generate_frame(frame: RgbImage) -> String {
+fn generate_frame(frame: RgbImage) {
+    let mut stdout = stdout();
     let mut pixels = "".to_string();
+    let mut y = 0;
+
+    //lines
     for line in frame.chunks(frame.width() as usize * 3) {
+        //pixels
         for pixel in line.chunks(3) {
+            //push pixels to String
             pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
         }
-        pixels += "\n";
+        //print pixels
+        stdout
+            .queue(cursor::MoveTo(0, y)).unwrap()
+            .queue(Print(pixels)).unwrap();
+
+        pixels = "".to_string();
+        y += 1;
     }
-    pixels
+    stdout.flush().expect("TODO: panic message");
 }
 
 fn get_max_frames(path: &Path) -> usize {
@@ -204,10 +236,14 @@ fn on_volume_down() {
     }
 }
 
-fn generate_ribbon(index: usize, max_frames: usize) -> String {
-    format!("\x1b[38;2;255;255;255m{}s <{}> {}s\
-    \nFrame={}/{}  Volume={:.0}%\
-    \nPress 'P' to pause/play  Press 'ArrowUp/Down' to change volume", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS), index, max_frames, *VOLUME.lock().unwrap() * 100f32)
+fn generate_ribbon(index: usize, max_frames: usize) {
+    stdout()
+        .queue(cursor::MoveTo(0, cursor::position().unwrap().1 + 1)).unwrap()
+        .queue(Print(format!("\x1b[38;2;255;255;255m{}s <{}> {}s", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS)))).unwrap()
+        //.queue(cursor::MoveTo(0, cursor::position().unwrap().1 + 1)).unwrap()
+        .queue(Print(format!("Frame={}/{}  Volume={:.0}", index, max_frames, *VOLUME.lock().unwrap() * 100f32))).unwrap()
+        //.queue(cursor::MoveTo(0, cursor::position().unwrap().1 + 1)).unwrap()
+        .queue(Print("Press 'P' to pause/play  Press 'ArrowUp/Down' to change volume")).unwrap();
 }
 
 fn generate_timeline(index: usize, max_frames: usize) -> String {
