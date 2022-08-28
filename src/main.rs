@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read};
-use crossterm::{cursor, ExecutableCommand, QueueableCommand, style, terminal};
+use crossterm::{cursor, event, ExecutableCommand, execute, queue, QueueableCommand, style, terminal};
 use crossterm::style::Colored::ForegroundColor;
 use crossterm::style::{Color, Print, SetForegroundColor};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -21,7 +21,7 @@ const FPS: usize = 20;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 lazy_static!(
-    static ref USE_CACHE: Mutex<bool> = Mutex::new(true);
+    //static ref USE_CACHE: Mutex<bool> = Mutex::new(true);
     static ref IS_PLAYING: Mutex<bool> = Mutex::new(true);
     static ref FRAMES: Mutex<Vec<DynamicImage>> = Mutex::new(vec!());
     static ref VOLUME: Mutex<f32> = Mutex::new(1f32);
@@ -30,16 +30,23 @@ lazy_static!(
 fn main() {
     //TODO fixnout ignore-cache, --no-ribbon, moc velký aspect ratio
     //panic setup
-    /*panic::set_hook(Box::new(|info| {
-        println!("{}", info.to_string().split('\'').collect::<Vec<&str>>()[1]);
-    }));*/
+    panic::set_hook(Box::new(|info| {
+        disable_raw_mode().unwrap();
+        println!("{}", info.to_string());
+        //println!("{}", info.to_string().split('\'').collect::<Vec<&str>>()[1]);
+        end_process();
+    }));
+
+    //parse args
+    let args: Vec<String> = env::args().collect();
+    let ignore_cache = if args.contains(&"--ignore-cache".to_string()) { true } else { false };
 
     //get valid path
-    let path = get_file_path();
+    let path = Path::new(args.get(1).unwrap_or_else(|| panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1)).trim());
+    if File::open(Path::new(path)).is_err() || !is_video(Path::new(path)) { panic!("Invalid path or unsupported file!") }
 
     //get max_frames
     let max_frames = get_max_frames(Path::new(&path));
-    println!("{}", max_frames);
 
     //check ffmpeg
     Command::new("ffmpeg").output().expect("FFMPEG NOT FOUND! Please install one at https://ffmpeg.org/");
@@ -48,23 +55,40 @@ fn main() {
 
     //upsert TMP & CACHE folder
     let tmp_folder = format!("{}{}TerminalMediaPlayer", dirs::video_dir().unwrap().display(), get_system_backslash());
-    if File::open(&tmp_folder).is_err() {
+    /*if File::open(&tmp_folder).is_err() {
+        println!("{}", tmp_folder);
         DirBuilder::new().create(&tmp_folder).expect(&*format!("Unable to create CACHE folder in {}", dirs::video_dir().unwrap().display()));
     }
     let cache_folder = format!("{}{}TerminalMediaPlayer{}{}", dirs::video_dir().unwrap().display(), get_system_backslash(), get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
     if File::open(&cache_folder).is_err() {
         DirBuilder::new().create(&cache_folder).expect(&*format!("Unable to create CACHE folder in {}", &tmp_folder));
+    }*/
+
+    let cache_folder = format!("{}{}TerminalMediaPlayer{}{}", dirs::video_dir().unwrap().display(), get_system_backslash(), get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
+    let audio = format!("{}{}{}.mp3", &cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
+    if ignore_cache {
+        //convert video
+        println!("Converting video");
+        fs::remove_dir_all(&cache_folder).unwrap();
+        fs::create_dir(&cache_folder).unwrap();
+        convert_video(cache_folder.clone(), path.to_str().unwrap().to_string());
+        thread::sleep(Duration::from_millis(3000));
+
+        //convert audio
+        println!("Converting audio");
+        ffmpeg_handler(vec![&audio], path.to_str().unwrap());
     }
 
-    //convert video
-    println!("Converting video");
-    convert_video(cache_folder.clone(), max_frames, path.clone());
-
-    //convert audio
-    println!("Converting audio");
-    let audio = format!("{}{}{}.mp3", &cache_folder, get_system_backslash(), Path::new(&path).file_stem().unwrap().to_str().unwrap());
-    convert_audio(&audio, &path);
     enable_raw_mode().unwrap();
+    let mut stdout = stdout();
+    queue!(
+            stdout,
+            cursor::DisableBlinking,
+            event::DisableMouseCapture,
+            cursor::Hide,
+            terminal::EnterAlternateScreen).unwrap();
+    stdout.flush().expect("TODO: panic message");
+
 
     //input thread
     thread::spawn(|| {
@@ -92,14 +116,15 @@ fn main() {
         let mut iter = 1;
         loop {
             for _ in 0..10 {
-                let cur_file = format!("{}{}{}.png", &cache_folder, get_system_backslash(), iter.to_string().trim());
+                let cur_file = format!("{}{}{}.png", cache_folder, get_system_backslash(), iter.to_string().trim());
                 if Path::new(&cur_file).extension().unwrap() == "png" {
-                    let img = ImageReader::open(&cur_file).unwrap().decode().unwrap();
+                    if ImageReader::open(&cur_file).is_err() { return; }
+                    let img = ImageReader::open(&cur_file).expect("panic").decode().expect("sus");
                     FRAMES.lock().unwrap().push(img);
                     iter += 1;
                 }
             }
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(300));
         }
     });
 
@@ -118,47 +143,39 @@ fn main() {
                 play_audio(File::open(&audio).unwrap());
             }
 
-            generate_frame(FRAMES.lock().unwrap().get(0)
+            generate_frame(FRAMES.lock().expect("amog").get(0)
                 .expect("End of playback\nhttps://github.com/dlabaja/TerminalMediaPlayer").to_rgb8());
             generate_ribbon(current_frame + 1, max_frames);
-            FRAMES.lock().unwrap().remove(0);
+            FRAMES.lock().expect("amog").remove(0);
             current_frame += 1;
         }
     }
 }
 
 fn end_process() {
+    let mut stdout = stdout();
+    queue!(
+            stdout,
+            cursor::EnableBlinking,
+            event::EnableMouseCapture,
+            cursor::Show,
+            terminal::LeaveAlternateScreen
+        ).unwrap();
+    stdout.flush().unwrap();
     disable_raw_mode().expect("TODO: panic message");
-    stdout()
-        .queue(Print("\x1B[2J\x1B[1;1H")).unwrap()
-        .queue(SetForegroundColor(Color::White)).expect("TODO: panic message");
     process::exit(0);
 }
 
-fn convert_video(cache_folder: String, max_frames: usize, path: String) {
-    if read_dir(&cache_folder).unwrap().count() as i32 - 1 < max_frames as i32 || !*USE_CACHE.lock().unwrap() {
-        thread::spawn(move || {
-            //get video size
-            let aspect_ratio = String::from_utf8(Command::new("ffprobe").args([&path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=display_aspect_ratio", "-of", "csv=s=x:p=0"]).
-                output().unwrap().stdout).unwrap();
-            let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
-            let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
-            //let (width, height) = (80, 90);
+fn convert_video(cache_folder: String, path: String) {
+    //get video size
+    let aspect_ratio = String::from_utf8(Command::new("ffprobe").args([&path, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=display_aspect_ratio", "-of", "csv=s=x:p=0"]).
+        output().unwrap().stdout).unwrap();
+    let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
+    let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
 
-            ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS), &format!("{}{}%0d.png", &cache_folder, get_system_backslash())], &path);
-        });
-        thread::sleep(Duration::from_millis(500));
-        return;
-    }
-    println!("Video found in CACHE (your-video-folder/video-name), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag")
-}
-
-fn convert_audio(audio: &String, path: &str) {
-    if File::open(&audio).is_err() || !*USE_CACHE.lock().unwrap() {
-        ffmpeg_handler(vec![audio], path);
-        return;
-    }
-    println!("Audio found in CACHE (your-video-folder/video-name), aborting conversion. If you want to convert anyways, use \"--ignore-cache\" flag")
+    thread::spawn(move || {
+        ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS), &format!("{}{}%0d.png", &cache_folder, get_system_backslash())], &path);
+    });
 }
 
 fn generate_frame(frame: RgbImage) {
@@ -174,14 +191,11 @@ fn generate_frame(frame: RgbImage) {
             pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
         }
         //print pixels
-        stdout
-            .queue(cursor::MoveTo(0, y)).unwrap()
-            .queue(Print(pixels)).unwrap();
-
+        stdout.queue(cursor::MoveTo(0, y)).unwrap().queue(Print(&pixels)).unwrap();
         pixels = "".to_string();
         y += 1;
     }
-    stdout.flush().expect("TODO: panic message");
+    stdout.flush().unwrap();
 }
 
 fn get_max_frames(path: &Path) -> usize {
@@ -191,17 +205,19 @@ fn get_max_frames(path: &Path) -> usize {
         output().unwrap().stdout).unwrap();
     let cur_fps = cur_fps.trim().split('/').collect::<Vec<&str>>();
     let fps_ratio = cur_fps[0].parse::<usize>().unwrap() / cur_fps[1].parse::<usize>().unwrap();
+
+    println!("{}", (cur_max_frames as f32 / (fps_ratio as f32 / FPS as f32)) as usize);
     (cur_max_frames as f32 / (fps_ratio as f32 / FPS as f32)) as usize
 }
 
 fn get_ideal_resolution(width: f32, height: f32) -> (usize, usize) {
     let mut amplifier: f32 = 0.0;
-    let term_width = crossterm::terminal::size().unwrap().0;
-    let term_height = crossterm::terminal::size().unwrap().1 - 5;
+    let term_width = terminal::size().unwrap().0;
+    let term_height = terminal::size().unwrap().1 - 5;
     for i in 0..1000
     {
         let i = (i as f32) / 10.0;
-        if (width * i * 2.0 > term_width as f32 || height * i > term_height as f32) || width * height * i * i > 4968.0 {
+        if width * i * 2.0 > term_width as f32 || height * i > term_height as f32 {
             break;
         }
         amplifier = i;
@@ -240,10 +256,8 @@ fn generate_ribbon(index: usize, max_frames: usize) {
     stdout()
         .queue(cursor::MoveTo(0, cursor::position().unwrap().1 + 1)).unwrap()
         .queue(Print(format!("\x1b[38;2;255;255;255m{}s <{}> {}s", secs_to_secs_and_mins(index / FPS), generate_timeline(index, max_frames), secs_to_secs_and_mins(max_frames / FPS)))).unwrap()
-        //.queue(cursor::MoveTo(0, cursor::position().unwrap().1 + 1)).unwrap()
-        .queue(Print(format!("Frame={}/{}  Volume={:.0}", index, max_frames, *VOLUME.lock().unwrap() * 100f32))).unwrap()
-        //.queue(cursor::MoveTo(0, cursor::position().unwrap().1 + 1)).unwrap()
-        .queue(Print("Press 'P' to pause/play  Press 'ArrowUp/Down' to change volume")).unwrap();
+        .queue(Print(format!("Frame={}/{}  Volume={:.0}%", index, max_frames, *VOLUME.lock().unwrap() * 100.0))).unwrap()
+        .queue(Print("Press 'P' to pause/play  Press 'ArrowUp/Down' to change volume")).expect("");
 }
 
 fn generate_timeline(index: usize, max_frames: usize) -> String {
@@ -276,7 +290,6 @@ fn play_audio(file: File) {
 }
 
 fn on_pause() {
-    disable_raw_mode().unwrap();
     let is_playing = *IS_PLAYING.lock().unwrap();
     if !is_playing {
         *IS_PLAYING.lock().unwrap() = true;
@@ -285,23 +298,11 @@ fn on_pause() {
     *IS_PLAYING.lock().unwrap() = false;
 }
 
-fn get_file_path() -> String {
-    let args: Vec<String> = env::args().collect();
-
-    let path = &args.get(1).unwrap_or_else(|| panic!("Expected 1 argument, got {}! Hint - add filepath as the argument", args.len() - 1)).trim();
-    if args.contains(&"--ignore-cache".to_string()) {
-        *USE_CACHE.lock().unwrap() = false;
-    }
-
-    if File::open(Path::new(path)).is_err() || !is_video(Path::new(path)) { panic!("Invalid path or unsupported file!") }
-    path.to_string()
-}
-
 fn is_video(path: &Path) -> bool {
     if path.is_dir() {
         return false;
     }
-    if VIDEO_FORMATS.contains(&path.extension().unwrap().to_str().unwrap()) {
+    if VIDEO_FORMATS.contains(&path.extension().expect("sus").to_str().expect("amogus")) {
         return true;
     }
     false
