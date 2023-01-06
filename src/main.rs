@@ -17,7 +17,7 @@ use rodio::{Decoder, OutputStream, Sink};
 use lazy_static::lazy_static;
 use image::io::Reader as ImageReader;
 
-const FPS: usize = 16;
+const FPS: usize = 20;
 const VIDEO_FORMATS: [&str; 9] = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "mpg", "flw"];
 
 lazy_static!(
