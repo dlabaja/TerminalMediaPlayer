@@ -27,8 +27,6 @@ lazy_static!(
 );
 
 fn main() {
-    //TODO fixnout ignore-cache, --no-ribbon, moc velký aspect ratio
-
     //panic setup
     panic::set_hook(Box::new(|info| {
         end_process(info.to_string());
@@ -89,8 +87,8 @@ fn main() {
     //input thread
     thread::spawn(|| {
         loop {
-            if poll(Duration::from_secs(0)).unwrap() {
-                match read().unwrap() {
+            if poll(Duration::from_secs(0)).expect("poll") {
+                match read().expect("key") {
                     Event::Key(KeyEvent { code: KeyCode::Char('p'), modifiers: KeyModifiers::NONE, .. }) =>
                         on_pause(),
                     Event::Key(KeyEvent { code: KeyCode::Up, modifiers: KeyModifiers::NONE, .. }) =>
@@ -166,8 +164,9 @@ fn convert_video(cache_folder: String, path: String) {
     let aspect_ratio: Vec<&str> = aspect_ratio.trim().split(':').into_iter().collect();
     let (width, height) = get_ideal_resolution(aspect_ratio[0].parse::<usize>().unwrap() as f32, aspect_ratio[1].parse::<usize>().unwrap() as f32);
 
+    //todo use width and height
     thread::spawn(move || {
-        ffmpeg_handler(vec!["-vf", &format!("scale={}:{},fps={}", &width, &height, FPS), &format!("{}{}%0d.png", &cache_folder, get_system_backslash())], &path);
+        ffmpeg_handler(vec!["-vf", &format!("scale=80:45,fps={}", FPS), &format!("{}{}%0d.png", &cache_folder, get_system_backslash())], &path);
     });
 }
 
@@ -180,10 +179,10 @@ fn generate_frame(frame: RgbImage) {
         for pixel in line.chunks(3) {
             pixels += &*format!("\x1b[38;2;{};{};{}m██", pixel[0], pixel[1], pixel[2]);
         }
-        stdout.queue(cursor::MoveTo(0, y)).unwrap().queue(Print(&pixels)).unwrap();
+        stdout.queue(cursor::MoveTo(0, y)).expect("stdout").queue(Print(&pixels)).expect("queue");
         y += 1;
     }
-    stdout.flush().unwrap();
+    stdout.flush().expect("flush");
 }
 
 fn get_max_frames(path: &Path) -> usize {
