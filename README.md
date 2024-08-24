@@ -7,4 +7,5 @@ Play your favorite videos inside a terminal! Supports all video formats and soun
 
 **FFMPEG** is needed to run it (https://ffmpeg.org/)
 
-![image](https://cdn.discordapp.com/attachments/794540894971625482/999032140085874781/unknown.png)
+![obrazek](https://github.com/user-attachments/assets/e06e01b0-a8d1-40e6-9776-a1891963a3bb)
+
